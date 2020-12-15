@@ -25,6 +25,11 @@ Need to navigate changes that aren't natively supported by statefulsets, includi
 which helps avoid race conditions during deletions
     - If we don't want pod to have k8s API access, can seed the lease in a configmap that has all available leases.
 
+- Going to need two new CRDs:
+  - 1) gratefulsets (manages (2))
+  - 2) gratefulsetpool (like replicasets, hashed by immutable fields)
+    - immutable fields are: all_fields - [replicas, template, updatestrategy].
+
 Examples:
   - 1) A scale down could look like:
     - 1) edit configmap to revoke highest numbered lease.
