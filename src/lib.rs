@@ -1,14 +1,14 @@
-pub mod gs;
-
 #[macro_use]
 extern crate error_chain;
 
-mod errors {
+pub mod gs;
+pub mod errors {
     // Create the Error, ErrorKind, ResultExt, and Result types
     error_chain! {
         foreign_links {
             Io(std::io::Error);
             HttpRequest(reqwest::Error);
+            Kube(kube::Error);
         }
     }
 }
