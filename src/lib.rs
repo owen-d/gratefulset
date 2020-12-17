@@ -43,4 +43,8 @@ Examples:
 
   - 3) Roll one pod spec to another (no immutable changes)
     - 1) pass the change to underlying sts.
+
+Notes:
+  - uses pikach.us prefixing for API groups
+  - injects an "owner.pikach.us={}" label onto GratefulSetPools in order to be able to effectively query children (cannot do it via owner refs AFAICT).
 */

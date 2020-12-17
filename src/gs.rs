@@ -63,6 +63,23 @@ pub struct GratefulSetPoolStatus {
     pub updated_replicas: Option<i32>,
 }
 
+impl GratefulSetPoolStatus {
+    // stabilized indicates whether the underlying statefulset is ready and up to date.
+    fn stabilized(&self) -> bool {
+        [
+            self.current_replicas,
+            self.ready_replicas,
+            self.updated_replicas,
+        ]
+        .iter()
+        .all(|x| match *x {
+            Some(x) => x == self.replicas,
+            _ => false,
+        })
+        // self.replicas == self.current_replicas == self.ready_replicas == self.updated_replicas
+    }
+}
+
 struct ImmutableSts(StatefulSetSpec);
 
 impl Hash for ImmutableSts {

@@ -22,8 +22,23 @@ async fn reconcile(gs: GratefulSet, ctx: Context<Data>) -> Result<ReconcilerActi
     let ns = Meta::namespace(&gs).expect("gs is namespaced");
     debug!("Reconcile Foo {}: {:?}", name, gs);
 
+    let pools: Api<GratefulSetPool> = Api::namespaced(client.clone(), &ns);
+    let lp = ListParams {
+        label_selector: Some(format!("owner.pikach.us={}", name)),
+        ..ListParams::default()
+    };
+    pools
+        .list(&lp)
+        .await?
+        .iter()
+        .filter_map(|p| p.status.as_ref())
+        .for_each(|s| {
+            let status: &GratefulSetPoolStatus = s;
+        });
+
     Ok(ReconcilerAction {
-        requeue_after: Some(Duration::from_secs(60)),
+        // try again in 5min
+        requeue_after: Some(Duration::from_secs(300)),
     })
 }
 
@@ -49,11 +64,17 @@ impl Manager {
         let crds: Api<CustomResourceDefinition> = Api::all(client.clone());
         crds.get("gratefulset.pikach.us")
             .await
-            .expect("install foo crd first");
+            .expect("install gratefulset crd first");
 
-        let gs = Api::<GratefulSet>::all(client);
+        crds.get("gratefulsetpool.pikach.us")
+            .await
+            .expect("install gratefulsetpool crd first");
+
+        let gs = Api::<GratefulSet>::all(client.clone());
+        let pools = Api::<GratefulSetPool>::all(client.clone());
 
         let drainer = Controller::new(gs, ListParams::default())
+            .owns(pools, ListParams::default())
             .run(reconcile, error_policy, context)
             .for_each(|o| {
                 info!("Reconciled {:?}", o);
