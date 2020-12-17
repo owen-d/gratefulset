@@ -2,6 +2,7 @@
 extern crate error_chain;
 
 pub mod gs;
+pub mod manager;
 pub mod errors {
     // Create the Error, ErrorKind, ResultExt, and Result types
     error_chain! {

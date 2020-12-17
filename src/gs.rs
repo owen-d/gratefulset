@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 
 #[derive(CustomResource, Clone, Debug, Deserialize, Serialize)]
 #[kube(
-    group = "owen-d.dev",
+    group = "pikach.us",
     version = "v1",
     kind = "GratefulSet",
     status = "GratefulSetStatus",
@@ -35,7 +35,7 @@ pub struct GratefulSetStatus {
 
 #[derive(CustomResource, Clone, Debug, Deserialize, Serialize)]
 #[kube(
-    group = "owen-d.dev",
+    group = "pikach.us",
     version = "v1",
     kind = "GratefulSetPool",
     status = "GratefulSetPoolStatus",

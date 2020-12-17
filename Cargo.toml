@@ -12,8 +12,11 @@ rand = "0.7.3"
 serde_json = "1.0.59"
 kube-derive = "0.43.0"
 kube = "0.43.0"
-k8s-openapi = { version = "0.9.0", default-features = false, features = ["v1_17"] }
+k8s-openapi = { version = "0.9.0", default-features = false, features = ["v1_18"] }
 futures = "0.3.8"
+kube-runtime = "0.43.0"
+log = "0.4.11"
+tokio = "0.3.6"
 
 [dependencies.reqwest]
 version = "0.10.9"

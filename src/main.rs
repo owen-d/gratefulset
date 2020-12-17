@@ -1,18 +1,24 @@
-use gratefulset::{errors::*, gs::*};
-use kube::api::{Api, ListParams, Meta, PostParams, WatchEvent};
+use gratefulset::{errors::*, gs::*, manager::*};
+use kube::api::{Api, ListParams, Meta, WatchEvent};
 use kube::Client;
+
 // `block_on` blocks the current thread until the provided future has run to
 // completion. Other executors provide more complex behavior, like scheduling
 // multiple futures onto the same thread.
-use futures::executor::block_on;
+use futures::{executor::block_on, Future};
 use futures::{StreamExt, TryStreamExt};
 
 fn main() {
-    let x = block_on(libmain());
-    println!("got {:#?}", x)
+    block_on(libmain());
 }
 
-async fn libmain() -> Result<()> {
+async fn libmain() -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+    let client = kube::Client::try_default().await.expect("create client");
+    let (_, drainer) = Manager::new(client).await;
+    drainer
+}
+
+async fn libwatch() -> Result<()> {
     // Read the environment to find config for kube client.
     // Note that this tries an in-cluster configuration first,
     // then falls back on a kubeconfig file.
