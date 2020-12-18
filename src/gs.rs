@@ -1,9 +1,12 @@
 use k8s_openapi::api::apps::v1::StatefulSetSpec;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
+use k8s_openapi::{Metadata, Resource};
+use kube::api::Meta;
 use kube_derive::CustomResource;
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 
-#[derive(CustomResource, Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(CustomResource, Clone, Debug, Deserialize, Serialize, PartialEq, Default)]
 #[kube(
     group = "pikach.us",
     version = "v1",
@@ -16,6 +19,35 @@ use std::hash::{Hash, Hasher};
 pub struct GratefulSetSpec {
     pub name: String,
     pub statefulset_spec: StatefulSetSpec,
+}
+
+impl GratefulSetSpec {
+    pub fn pool(&self) -> GratefulSetPool {
+        let name = format!(
+            "{}-{:x}",
+            self.name,
+            ImmutableSts(&self.statefulset_spec).checksum()
+        );
+        let mut want = GratefulSetPool::new(
+            &name,
+            GratefulSetPoolSpec {
+                statefulset_spec: self.statefulset_spec.clone(),
+                ..Default::default()
+            },
+        );
+
+        // Set owner reference and label pointing to gratefulset
+        let mut want_md: &mut ObjectMeta = want.metadata_mut();
+        want_md.owner_references = Some(vec![OwnerReference {
+            kind: GratefulSet::KIND.to_string(),
+            ..Default::default()
+        }]);
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert(String::from("owner.pikach.us"), String::from(name));
+        want_md.labels = Some(labels);
+
+        want
+    }
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -33,7 +65,7 @@ pub struct GratefulSetStatus {
     pub updated_replicas: Option<i32>,
 }
 
-#[derive(CustomResource, Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(CustomResource, Clone, Debug, Deserialize, Serialize, PartialEq, Default)]
 #[kube(
     group = "pikach.us",
     version = "v1",

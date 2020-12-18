@@ -1,8 +1,10 @@
 use crate::{errors::*, gs::*};
 use futures::{future::BoxFuture, FutureExt, StreamExt};
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1beta1::CustomResourceDefinition;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
+use k8s_openapi::{Metadata, Resource};
 use kube::{
-    api::{Api, ListParams, Meta, PatchParams},
+    api::{Api, ListParams, Meta, PatchParams, PostParams},
     client::Client,
 };
 use kube_runtime::controller::{Context, Controller, ReconcilerAction};
@@ -44,44 +46,52 @@ async fn reconcile(gs: GratefulSet, ctx: Context<Data>) -> Result<ReconcilerActi
 
     // gs -> pool(immutable-config) -> sts-hash(immutable-config)
 
-    if let Some(found) = desired_pool {
-        // If only the desired pool exists & it has the correct config & replicas, noop.
-        if found.spec.statefulset_spec == gs.spec.statefulset_spec {
-            return Ok(ReconcilerAction {
-                requeue_after: None,
-            });
-        }
-
-        // If the desired pool exists but has a different spec (sans replicas), update it and return early. We'll need to wait for the underlying sts to roll to the new spec before continuing.
-        let mut found_sans_replicas = found.spec.statefulset_spec.clone();
-        found_sans_replicas.replicas = None;
-
-        let mut want_sans_replicas = gs.spec.statefulset_spec.clone();
-        want_sans_replicas.replicas = None;
-
-        if found_sans_replicas == want_sans_replicas {
-            let replicas = found.spec.statefulset_spec.replicas;
-            let mut diff = found.clone();
-            diff.spec.statefulset_spec.replicas = replicas;
-
-            let serialized = serde_json::to_string(&diff)?;
-            let patch = serde_yaml::to_vec(&serialized)?;
-
-            return pools
-                .patch(
-                    &Meta::name(found),
-                    &PatchParams::apply("gratefulset-mgr"),
-                    patch,
-                )
-                .await
-                .map_err(|e| Error::with_chain(e, "something went wrong"))
-                .map(|_| ReconcilerAction {
+    match desired_pool {
+        Some(found) => {
+            // If only the desired pool exists & it has the correct config & replicas, noop.
+            if found.spec.statefulset_spec == gs.spec.statefulset_spec {
+                return Ok(ReconcilerAction {
                     requeue_after: None,
                 });
+            }
+
+            // If the desired pool exists but has a different spec (sans replicas), update it and return early. We'll need to wait for the underlying sts to roll to the new spec before continuing.
+            let mut found_sans_replicas = found.spec.statefulset_spec.clone();
+            found_sans_replicas.replicas = None;
+
+            let mut want_sans_replicas = gs.spec.statefulset_spec.clone();
+            want_sans_replicas.replicas = None;
+
+            if found_sans_replicas == want_sans_replicas {
+                let replicas = found.spec.statefulset_spec.replicas;
+                let mut diff = found.clone();
+                diff.spec.statefulset_spec.replicas = replicas;
+
+                let serialized = serde_json::to_string(&diff)?;
+                let patch = serde_yaml::to_vec(&serialized)?;
+
+                return pools
+                    .patch(
+                        &Meta::name(found),
+                        &PatchParams::apply("gratefulset-mgr"),
+                        patch,
+                    )
+                    .await
+                    .map_err(|e| Error::with_chain(e, "something went wrong"))
+                    .map(|_| ReconcilerAction {
+                        requeue_after: None,
+                    });
+            }
+        }
+        None => {
+            // If the desired pool does not exist, we'll want to create it starting at 0 replicas.
+            let mut want = gs.spec.pool();
+            want.spec.statefulset_spec.replicas = Some(0);
+
+            // Ideally we create this at the end.
+            pools.create(&PostParams::default(), &want).await?;
         }
     }
-
-    // If the desired pool does not exist, we'll want to create it starting at 0 replicas.
 
     // Now we have to handle a few cases for scaling:
     // Order of operations should be (ScaleDown -> ScaleUp)

@@ -34,3 +34,7 @@ A ScaleDown event from `n` -> `n-1` works as following:
 3) Pod tries to restart, but never becomes ready due to init container lock acquisition failure.
 4) sts adjusts replicas to `n-1`, removing this pod.
 5) Fin.
+
+## Known issues
+
+The rollout logic isn't always the most inefficient. For example, changing the pod spec _and_ decreasing the replicas at the same time (from `n` -> `n-m`) will first roll out `n` new pods with the updated spec, then scale down `m` of them.
