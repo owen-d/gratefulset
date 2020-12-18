@@ -29,15 +29,13 @@ async fn reconcile(gs: GratefulSet, ctx: Context<Data>) -> Result<ReconcilerActi
     };
 
     // Fetch all pools belonging to this GratefulSet and
+    // let old_pools = vec![];
+    // let desired_pool = None;
     // separate into ([old_pool], desired_pool)
-    pools
-        .list(&lp)
-        .await?
-        .iter()
-        .filter_map(|p| p.status.as_ref())
-        .for_each(|s| {
-            let status: &GratefulSetPoolStatus = s;
-        });
+    pools.list(&lp).await?.iter().for_each(|p| {
+        let s: &GratefulSetPoolSpec = &p.spec;
+        let hash = ImmutableSts(&s.statefulset_spec).checksum();
+    });
 
     // gs -> pool(immutable-config) -> sts-hash(immutable-config)
 

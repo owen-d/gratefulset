@@ -44,8 +44,8 @@ pub struct GratefulSetStatus {
     namespaced
 )]
 pub struct GratefulSetPoolSpec {
-    name: String,
-    statefulset_spec: StatefulSetSpec,
+    pub name: String,
+    pub statefulset_spec: StatefulSetSpec,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -80,9 +80,9 @@ impl GratefulSetPoolStatus {
     }
 }
 
-struct ImmutableSts(StatefulSetSpec);
+pub struct ImmutableSts<'a>(pub &'a StatefulSetSpec);
 
-impl Hash for ImmutableSts {
+impl<'a> Hash for ImmutableSts<'a> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.pod_management_policy.hash(state);
         self.0.revision_history_limit.hash(state);
@@ -140,5 +140,14 @@ impl Hash for ImmutableSts {
                 }
             }
         }
+    }
+}
+
+impl<'a> ImmutableSts<'a> {
+    // discard all but 16 bits. We'll hex them into 8 characters.
+    pub fn checksum(&self) -> u16 {
+        let mut s = std::collections::hash_map::DefaultHasher::new();
+        self.hash(&mut s);
+        s.finish() as u16
     }
 }
