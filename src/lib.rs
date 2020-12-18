@@ -10,6 +10,8 @@ pub mod errors {
             Io(std::io::Error);
             HttpRequest(reqwest::Error);
             Kube(kube::Error);
+            JSON(serde_json::Error);
+            YAML(serde_yaml::Error);
         }
     }
 }

@@ -3,7 +3,7 @@ use kube_derive::CustomResource;
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 
-#[derive(CustomResource, Clone, Debug, Deserialize, Serialize)]
+#[derive(CustomResource, Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[kube(
     group = "pikach.us",
     version = "v1",
@@ -14,8 +14,8 @@ use std::hash::{Hash, Hasher};
     namespaced
 )]
 pub struct GratefulSetSpec {
-    name: String,
-    statefulset_spec: StatefulSetSpec,
+    pub name: String,
+    pub statefulset_spec: StatefulSetSpec,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -33,7 +33,7 @@ pub struct GratefulSetStatus {
     pub updated_replicas: Option<i32>,
 }
 
-#[derive(CustomResource, Clone, Debug, Deserialize, Serialize)]
+#[derive(CustomResource, Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[kube(
     group = "pikach.us",
     version = "v1",
