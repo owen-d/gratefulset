@@ -1,4 +1,4 @@
-use k8s_openapi::api::apps::v1::StatefulSetSpec;
+use k8s_openapi::api::apps::v1::{StatefulSetSpec, StatefulSetStatus};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use k8s_openapi::{Metadata, Resource};
 use kube::api::Meta;
@@ -80,32 +80,30 @@ pub struct GratefulSetPoolSpec {
     pub statefulset_spec: StatefulSetSpec,
 }
 
+impl GratefulSetPoolSpec {
+    pub fn without_replicas(&self) -> StatefulSetSpec {
+        let mut x = self.statefulset_spec.clone();
+        x.replicas = None;
+        x
+    }
+}
+
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct GratefulSetPoolStatus {
-    /// currentReplicas is the number of Pods created by the StatefulSet controller from the StatefulSet version indicated by currentRevision.
-    pub current_replicas: Option<i32>,
-
-    /// readyReplicas is the number of Pods created by the StatefulSet controller that have a Ready Condition.
-    pub ready_replicas: Option<i32>,
-
-    /// replicas is the number of Pods created by the StatefulSet controller.
-    pub replicas: i32,
-
-    /// updatedReplicas is the number of Pods created by the StatefulSet controller from the StatefulSet version indicated by updateRevision.
-    pub updated_replicas: Option<i32>,
+    pub sts_status: StatefulSetStatus,
 }
 
 impl GratefulSetPoolStatus {
     // stabilized indicates whether the underlying statefulset is ready and up to date.
     fn stabilized(&self) -> bool {
         [
-            self.current_replicas,
-            self.ready_replicas,
-            self.updated_replicas,
+            self.sts_status.current_replicas,
+            self.sts_status.ready_replicas,
+            self.sts_status.updated_replicas,
         ]
         .iter()
         .all(|x| match *x {
-            Some(x) => x == self.replicas,
+            Some(x) => x == self.sts_status.replicas,
             _ => false,
         })
         // self.replicas == self.current_replicas == self.ready_replicas == self.updated_replicas
