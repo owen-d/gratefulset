@@ -1,7 +1,10 @@
 use crate::{errors::*, gs::*};
 use futures::{future::BoxFuture, FutureExt, StreamExt};
-use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1beta1::CustomResourceDefinition;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
+use k8s_openapi::{
+    api::apps::v1::StatefulSetSpec,
+    apiextensions_apiserver::pkg::apis::apiextensions::v1beta1::CustomResourceDefinition,
+};
 use k8s_openapi::{Metadata, Resource};
 use kube::{
     api::{Api, DeleteParams, ListParams, Meta, PatchParams, PostParams},
@@ -96,6 +99,7 @@ async fn reconcile(gs: GratefulSet, ctx: Context<Data>) -> Result<ReconcilerActi
 
     let total_ready = old_pools.iter().fold(
         cur_pool
+            .clone()
             .status
             .and_then(|s| s.sts_status.ready_replicas)
             .unwrap_or(0),
@@ -112,14 +116,66 @@ async fn reconcile(gs: GratefulSet, ctx: Context<Data>) -> Result<ReconcilerActi
     // Now we have to handle a few cases for scaling:
     // Order of operations should be (ScaleDown -> ScaleUp)
 
-    // // If replicas across all pools >= desired replicas,
-    // // remove one from the most out of date pool (ScaleDown). This
-    // // mimics the statefulset rollout semantics where
+    // If replicas across all pools >= desired replicas,
+    // remove one from the most out of date pool (ScaleDown). This
+    // mimics the statefulset rollout semantics where
+    // one is removed before adding a new revision replica.
+    if total_ready >= total_desired {
+        // remove one from the oldest possible pool
+        let delta_pool = old_pools
+            .iter()
+            .fold(None, |acc, x| {
+                acc.or_else(|| {
+                    let reps = x.spec.statefulset_spec.replicas.unwrap_or(1);
+                    if reps > 0 {
+                        let mut updated = x.clone();
+                        updated.spec.statefulset_spec.replicas = Some(reps - 1);
+                        return Some(updated);
+                    }
+                    return None;
+                })
+            })
+            // default to using the most recent pool if the previous pools don't exist
+            // or have replicas set to 0.
+            .unwrap_or_else(|| {
+                let mut x = cur_pool.clone();
+                x.spec.delta_replicas(-1);
+                x
+            });
 
-    // // one is removed before adding a new revision replica.
+        let serialized = serde_json::to_string(&delta_pool)?;
+        let patch = serde_yaml::to_vec(&serialized)?;
+        pools
+            .patch(
+                &Meta::name(&delta_pool),
+                &PatchParams::apply("gratefulset-mgr"),
+                patch,
+            )
+            .await
+            .map_err(|e| Error::with_chain(e, "something went wrong"))
+            .map(|_| ReconcilerAction {
+                requeue_after: None,
+            })?;
+    } else {
+        // If replicas across all pools < desired replicas,
+        // add one to desired pool (ScaleUp).
 
-    // // If replicas across all pools < desired replicas,
-    // // add one to desired pool (ScaleUp).
+        let mut diff = cur_pool.clone();
+        diff.spec.delta_replicas(1);
+        let serialized = serde_json::to_string(&diff)?;
+        let patch = serde_yaml::to_vec(&serialized)?;
+        pools
+            .patch(
+                &Meta::name(&diff),
+                &PatchParams::apply("gratefulset-mgr"),
+                patch,
+            )
+            .await
+            .map_err(|e| Error::with_chain(e, "something went wrong"))
+            .map(|_| ReconcilerAction {
+                requeue_after: None,
+            })?;
+    }
 
     Ok(ReconcilerAction {
         // try again in 5min

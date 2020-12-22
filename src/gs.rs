@@ -4,6 +4,7 @@ use k8s_openapi::{Metadata, Resource};
 use kube::api::Meta;
 use kube_derive::CustomResource;
 use serde::{Deserialize, Serialize};
+use std::cmp::max;
 use std::hash::{Hash, Hasher};
 
 #[derive(CustomResource, Clone, Debug, Deserialize, Serialize, PartialEq, Default)]
@@ -86,6 +87,10 @@ impl GratefulSetPoolSpec {
         x.replicas = None;
         x
     }
+
+    pub fn delta_replicas(&mut self, n: i32) {
+        self.statefulset_spec.replicas = self.statefulset_spec.replicas.map(|x| max(0, x + n));
+    }
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -106,7 +111,6 @@ impl GratefulSetPoolStatus {
             Some(x) => x == self.sts_status.replicas,
             _ => false,
         })
-        // self.replicas == self.current_replicas == self.ready_replicas == self.updated_replicas
     }
 }
 
