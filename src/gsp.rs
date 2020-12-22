@@ -3,7 +3,11 @@ use crate::manager::Data;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::apps::v1::{StatefulSetSpec, StatefulSetStatus};
 use k8s_openapi::api::core::v1::ConfigMap;
+use k8s_openapi::api::core::v1::ConfigMapVolumeSource;
+use k8s_openapi::api::core::v1::Container;
 use k8s_openapi::api::core::v1::PodSpec;
+use k8s_openapi::api::core::v1::Volume;
+use k8s_openapi::api::core::v1::VolumeMount;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use k8s_openapi::{Metadata, Resource};
@@ -48,13 +52,49 @@ impl GratefulSetPoolSpec {
     }
 
     // Adds initcontainer + configmap references
-    // pub fn with_lock(&self) -> StatefulSetSpec {
-    //     let mut x = self.sts_spec.clone();
-    //     x.template.spec = x.template.spec.map(|p| PodSpec {
-    //         init_containers: ..p,
-    //     });
-    //     x
-    // }
+    pub fn with_lock(&self) -> StatefulSetSpec {
+        let mut x = self.sts_spec.clone();
+        x.template.spec = x.template.spec.map(|p| PodSpec {
+            init_containers: Some(vec![Container {
+                image: Some(String::from("alpine:3.7")),
+                command: Some(vec![
+                    String::from("/bin/sh"),
+                ]),
+                args: Some(vec![
+                    String::from("-c"),
+                    String::from(r#"echo ${HOSTNAME} | sed -r 's/.*-([0-9])+$/\1/' | xargs -n 1 -I {} -- [ -e {} ] && echo successfully acquired lock || (echo failure && exit 1)"#),
+                ]),
+                working_dir: Some(self.lock_dir()),
+                volume_mounts: Some(vec![VolumeMount {
+                    mount_path: self.lock_dir(),
+                    name: self.lock_volume(),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }]),
+            volumes: Some(vec![Volume {
+                config_map: Some(ConfigMapVolumeSource {
+                    name: Some(self.lock_volume()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+            ..p
+        });
+        x
+    }
+
+    fn configmap_name(&self) -> String {
+        format!("{}-gsp-lock", self.name)
+    }
+
+    fn lock_dir(&self) -> String {
+        String::from("/locks")
+    }
+
+    fn lock_volume(&self) -> String {
+        format!("{}-locks", "pikach.us")
+    }
 
     // returns the desired configmap with locks for each desired replica.
     pub fn configmap(&self, ns: String) -> ConfigMap {
@@ -65,7 +105,7 @@ impl GratefulSetPoolSpec {
         ConfigMap {
             data: Some(BTreeMap::from_iter(data)),
             metadata: ObjectMeta {
-                name: Some(format!("{}-gsp-lock", self.name)),
+                name: Some(self.configmap_name()),
                 namespace: Some(ns),
                 owner_references: Some(vec![OwnerReference {
                     kind: GratefulSetPool::KIND.to_string(),
