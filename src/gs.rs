@@ -32,7 +32,7 @@ use std::time::Duration;
 )]
 pub struct GratefulSetSpec {
     pub name: String,
-    pub statefulset_spec: StatefulSetSpec,
+    pub sts_spec: StatefulSetSpec,
 }
 
 impl GratefulSetSpec {
@@ -40,12 +40,12 @@ impl GratefulSetSpec {
         let name = format!(
             "{}-{:x}",
             self.name,
-            ImmutableSts(&self.statefulset_spec).checksum()
+            ImmutableSts(&self.sts_spec).checksum()
         );
         let mut want = GratefulSetPool::new(
             &name,
             GratefulSetPoolSpec {
-                statefulset_spec: self.statefulset_spec.clone(),
+                sts_spec: self.sts_spec.clone(),
                 ..Default::default()
             },
         );
@@ -95,15 +95,15 @@ async fn reconcile(gs: GratefulSet, ctx: Context<Data>) -> Result<ReconcilerActi
     // separate into ([old_pool], desired_pool)
     let mut want = gs.spec.pool();
     // Default a potentially new pool to 0 replicas (scaling is handled independently).
-    want.spec.statefulset_spec.replicas = Some(0);
-    let desired_hash = ImmutableSts(&want.spec.statefulset_spec).checksum();
+    want.spec.sts_spec.replicas = Some(0);
+    let desired_hash = ImmutableSts(&want.spec.sts_spec).checksum();
     // If the desired pool does not exist, we'll want to create it starting at 0 replicas.
 
     let (old_pools, cur_pool): (Vec<GratefulSetPool>, GratefulSetPool) =
         pools.list(&lp).await?.into_iter().fold(
             (vec![], want.clone()),
             move |(mut old_pools, mut cur_pool), p| {
-                let hash = ImmutableSts(&p.spec.statefulset_spec).checksum();
+                let hash = ImmutableSts(&p.spec.sts_spec).checksum();
                 if desired_hash != hash {
                     old_pools.push(p);
                 } else {
@@ -115,7 +115,7 @@ async fn reconcile(gs: GratefulSet, ctx: Context<Data>) -> Result<ReconcilerActi
 
     // If only the desired pool exists & it has the correct config & replicas,
     // ensure any old pools are deleted then bail.
-    if cur_pool.spec.statefulset_spec == gs.spec.statefulset_spec {
+    if cur_pool.spec.sts_spec == gs.spec.sts_spec {
         for p in old_pools {
             pools
                 .delete(&Meta::name(&p), &DeleteParams::default())
@@ -127,13 +127,13 @@ async fn reconcile(gs: GratefulSet, ctx: Context<Data>) -> Result<ReconcilerActi
     }
 
     // If the desired pool exists but has a different spec (sans replicas), update it and return early. We'll need to wait for the underlying sts to roll to the new spec before continuing.
-    if cur_pool.spec.statefulset_spec.replicas > Some(0)
+    if cur_pool.spec.sts_spec.replicas > Some(0)
         && want.spec.without_replicas() == cur_pool.spec.without_replicas()
     {
         // Don't update the replicas; those will be scaled independently once thew new spec settles.
         let mut diff = cur_pool.clone();
         diff.spec = want.spec.clone();
-        diff.spec.statefulset_spec.replicas = cur_pool.spec.statefulset_spec.replicas;
+        diff.spec.sts_spec.replicas = cur_pool.spec.sts_spec.replicas;
 
         let serialized = serde_json::to_string(&diff)?;
         let patch = serde_yaml::to_vec(&serialized)?;
@@ -168,7 +168,7 @@ async fn reconcile(gs: GratefulSet, ctx: Context<Data>) -> Result<ReconcilerActi
                     .unwrap_or(0)
         },
     );
-    let total_desired = gs.spec.statefulset_spec.replicas.unwrap_or(1);
+    let total_desired = gs.spec.sts_spec.replicas.unwrap_or(1);
 
     // Now we have to handle a few cases for scaling:
     // Order of operations should be (ScaleDown -> ScaleUp)
@@ -183,10 +183,10 @@ async fn reconcile(gs: GratefulSet, ctx: Context<Data>) -> Result<ReconcilerActi
             .iter()
             .fold(None, |acc, x| {
                 acc.or_else(|| {
-                    let reps = x.spec.statefulset_spec.replicas.unwrap_or(1);
+                    let reps = x.spec.sts_spec.replicas.unwrap_or(1);
                     if reps > 0 {
                         let mut updated = x.clone();
-                        updated.spec.statefulset_spec.replicas = Some(reps - 1);
+                        updated.spec.sts_spec.replicas = Some(reps - 1);
                     }
                     return None;
                 })

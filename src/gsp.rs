@@ -1,8 +1,18 @@
+use crate::errors::*;
+use crate::manager::Data;
+use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::apps::v1::{StatefulSetSpec, StatefulSetStatus};
+use kube::api::ListParams;
+use kube::api::Meta;
+use kube::Api;
 use kube_derive::CustomResource;
+use kube_runtime::controller::Context;
+use kube_runtime::controller::ReconcilerAction;
+use log::debug;
 use serde::{Deserialize, Serialize};
 use std::cmp::max;
 use std::hash::{Hash, Hasher};
+use std::time::Duration;
 
 #[derive(CustomResource, Clone, Debug, Deserialize, Serialize, PartialEq, Default)]
 #[kube(
@@ -16,18 +26,18 @@ use std::hash::{Hash, Hasher};
 )]
 pub struct GratefulSetPoolSpec {
     pub name: String,
-    pub statefulset_spec: StatefulSetSpec,
+    pub sts_spec: StatefulSetSpec,
 }
 
 impl GratefulSetPoolSpec {
     pub fn without_replicas(&self) -> StatefulSetSpec {
-        let mut x = self.statefulset_spec.clone();
+        let mut x = self.sts_spec.clone();
         x.replicas = None;
         x
     }
 
     pub fn delta_replicas(&mut self, n: i32) {
-        self.statefulset_spec.replicas = self.statefulset_spec.replicas.map(|x| max(0, x + n));
+        self.sts_spec.replicas = self.sts_spec.replicas.map(|x| max(0, x + n));
     }
 }
 
@@ -122,4 +132,22 @@ impl<'a> ImmutableSts<'a> {
         self.hash(&mut s);
         s.finish() as u16
     }
+}
+
+async fn reconcile(gs: GratefulSetPool, ctx: Context<Data>) -> Result<ReconcilerAction> {
+    let client = ctx.get_ref().client.clone();
+    let name = Meta::name(&gs);
+    let ns = Meta::namespace(&gs).expect("gs is namespaced");
+    debug!("Reconcile GratefulSetPool {}: {:?}", name, gs);
+
+    let sts: Api<StatefulSet> = Api::namespaced(client.clone(), &ns);
+    let lp = ListParams {
+        label_selector: Some(format!("owner.pikach.us={}", name)),
+        ..ListParams::default()
+    };
+
+    Ok(ReconcilerAction {
+        // try again in 5min
+        requeue_after: Some(Duration::from_secs(300)),
+    })
 }
