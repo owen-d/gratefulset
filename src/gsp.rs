@@ -64,7 +64,7 @@ impl GratefulSetPoolSpec {
                 ]),
                 args: Some(vec![
                     String::from("-c"),
-                    String::from(r#"echo ${HOSTNAME} | sed -r 's/.*-([0-9])+$/\1/' | xargs -n 1 -I {} -- [ -e {} ] && echo successfully acquired lock || (echo failure && exit 1)"#),
+                    String::from(r#"echo ${HOSTNAME} | sed -r 's/.*-([0-9])+$/\1/' | xargs -n 1 -I {} -- [ -e {} ] && echo successfully acquired lock at $$(date -u) || (echo failure && exit 1)"#),
                 ]),
                 working_dir: Some(self.lock_dir()),
                 volume_mounts: Some(vec![VolumeMount {
