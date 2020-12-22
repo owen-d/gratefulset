@@ -1,4 +1,4 @@
-use gratefulset::{errors::*, gs::*, manager::*};
+use gratefulset::{errors::*, gs::*};
 use kube::api::{Api, ListParams, Meta, WatchEvent};
 use kube::Client;
 
