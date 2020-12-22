@@ -54,8 +54,10 @@ impl GratefulSetPoolSpec {
     // Adds initcontainer + configmap references
     pub fn with_lock(&self) -> StatefulSetSpec {
         let mut x = self.sts_spec.clone();
-        x.template.spec = x.template.spec.map(|p| PodSpec {
-            init_containers: Some(vec![Container {
+        x.template.spec = x.template.spec.map(|p| {
+            let mut inits = p.init_containers.unwrap_or_default();
+            inits.push(Container {
+                name: String::from("gsp-unlocker"),
                 image: Some(String::from("alpine:3.7")),
                 command: Some(vec![
                     String::from("/bin/sh"),
@@ -71,21 +73,27 @@ impl GratefulSetPoolSpec {
                     ..Default::default()
                 }]),
                 ..Default::default()
-            }]),
-            volumes: Some(vec![Volume {
+            });
+
+            let mut vols = p.volumes.unwrap_or_default();
+            vols.push(Volume {
                 config_map: Some(ConfigMapVolumeSource {
                     name: Some(self.lock_volume()),
                     ..Default::default()
                 }),
                 ..Default::default()
-            }]),
+            });
+
+            PodSpec {
+            init_containers: Some(inits),
+            volumes: Some(vols),
             ..p
-        });
+        }});
         x
     }
 
     fn configmap_name(&self) -> String {
-        format!("{}-gsp-lock", self.name)
+        format!("{}-lock", self.name)
     }
 
     fn lock_dir(&self) -> String {
