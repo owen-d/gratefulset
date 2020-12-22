@@ -2,6 +2,11 @@ use crate::errors::*;
 use crate::manager::Data;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::apps::v1::{StatefulSetSpec, StatefulSetStatus};
+use k8s_openapi::api::core::v1::ConfigMap;
+use k8s_openapi::api::core::v1::PodSpec;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
+use k8s_openapi::{Metadata, Resource};
 use kube::api::ListParams;
 use kube::api::Meta;
 use kube::Api;
@@ -11,7 +16,9 @@ use kube_runtime::controller::ReconcilerAction;
 use log::debug;
 use serde::{Deserialize, Serialize};
 use std::cmp::max;
+use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
+use std::iter::FromIterator;
 use std::time::Duration;
 
 #[derive(CustomResource, Clone, Debug, Deserialize, Serialize, PartialEq, Default)]
@@ -38,6 +45,39 @@ impl GratefulSetPoolSpec {
 
     pub fn delta_replicas(&mut self, n: i32) {
         self.sts_spec.replicas = self.sts_spec.replicas.map(|x| max(0, x + n));
+    }
+
+    // Adds initcontainer + configmap references
+    // pub fn with_lock(&self) -> StatefulSetSpec {
+    //     let mut x = self.sts_spec.clone();
+    //     x.template.spec = x.template.spec.map(|p| PodSpec {
+    //         init_containers: ..p,
+    //     });
+    //     x
+    // }
+
+    // returns the desired configmap with locks for each desired replica.
+    pub fn configmap(&self, ns: String) -> ConfigMap {
+        let data = (0..self.sts_spec.replicas.unwrap_or(1))
+            .into_iter()
+            .map(|x| (x.to_string(), x.to_string()));
+
+        ConfigMap {
+            data: Some(BTreeMap::from_iter(data)),
+            metadata: ObjectMeta {
+                name: Some(format!("{}-gsp-lock", self.name)),
+                namespace: Some(ns),
+                owner_references: Some(vec![OwnerReference {
+                    kind: GratefulSetPool::KIND.to_string(),
+                    ..Default::default()
+                }]),
+                labels: Some(BTreeMap::from_iter(
+                    vec![(String::from("owner.pikach.us"), self.name.clone())].into_iter(),
+                )),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
     }
 }
 

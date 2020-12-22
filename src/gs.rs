@@ -45,6 +45,7 @@ impl GratefulSetSpec {
         let mut want = GratefulSetPool::new(
             &name,
             GratefulSetPoolSpec {
+                name: name.clone(),
                 sts_spec: self.sts_spec.clone(),
                 ..Default::default()
             },
