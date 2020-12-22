@@ -42,7 +42,7 @@ async fn reconcile(gs: GratefulSet, ctx: Context<Data>) -> Result<ReconcilerActi
     let desired_hash = ImmutableSts(&want.spec.statefulset_spec).checksum();
     // If the desired pool does not exist, we'll want to create it starting at 0 replicas.
 
-    let (mut old_pools, mut cur_pool): (Vec<GratefulSetPool>, GratefulSetPool) =
+    let (old_pools, mut cur_pool): (Vec<GratefulSetPool>, GratefulSetPool) =
         pools.list(&lp).await?.into_iter().fold(
             (vec![], want.clone()),
             move |(mut old_pools, mut cur_pool), p| {
