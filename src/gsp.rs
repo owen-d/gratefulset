@@ -11,8 +11,8 @@ use k8s_openapi::api::core::v1::VolumeMount;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use k8s_openapi::{Metadata, Resource};
-use kube::api::ListParams;
 use kube::api::Meta;
+use kube::api::{ListParams, PatchParams};
 use kube::Api;
 use kube_derive::CustomResource;
 use kube_runtime::controller::Context;
@@ -40,13 +40,13 @@ pub struct GratefulSetPoolSpec {
     pub sts_spec: StatefulSetSpec,
 }
 
-impl GratefulSetPoolSpec {
-    pub fn without_replicas(&self) -> StatefulSetSpec {
-        let mut x = self.sts_spec.clone();
-        x.replicas = None;
-        x
-    }
+pub fn without_replicas(spec: &StatefulSetSpec) -> StatefulSetSpec {
+    let mut x = spec.clone();
+    x.replicas = None;
+    x
+}
 
+impl GratefulSetPoolSpec {
     pub fn delta_replicas(&mut self, n: i32) {
         self.sts_spec.replicas = self.sts_spec.replicas.map(|x| max(0, x + n));
     }
@@ -233,6 +233,35 @@ async fn reconcile(gs: GratefulSetPool, ctx: Context<Data>) -> Result<Reconciler
         label_selector: Some(format!("owner.pikach.us={}", name)),
         ..ListParams::default()
     };
+
+    // TODO: replace with 404 matching when we know which error type this is.
+    let found = sts.get(&Meta::name(&gs)).await?;
+
+    // If the specs are equal, this is a noop.
+    if gs.spec.with_lock() == found.spec.clone().unwrap_or_default() {
+        return Ok(ReconcilerAction {
+            requeue_after: None,
+        });
+    }
+
+    // The spec has changed. Update it & start the underlying rollout (sans replicas).
+    let desired_sans_replicas = without_replicas(&gs.spec.with_lock());
+    if without_replicas(&found.spec.unwrap_or_default()) != desired_sans_replicas {
+        let patch = serde_yaml::to_vec(&serde_json::json!({ "spec": desired_sans_replicas }))?;
+        return sts
+            .patch(
+                &Meta::name(&gs),
+                &PatchParams::apply("gratefulset-mgr"),
+                patch,
+            )
+            .await
+            .map_err(|e| Error::with_chain(e, "something went wrong"))
+            .map(|_| ReconcilerAction {
+                requeue_after: None,
+            });
+    }
+
+    // From this point on, we know the desired spec (sans replicas) exists on the underlying sts.
 
     Ok(ReconcilerAction {
         // try again in 5min

@@ -129,7 +129,7 @@ async fn reconcile(gs: GratefulSet, ctx: Context<Data>) -> Result<ReconcilerActi
 
     // If the desired pool exists but has a different spec (sans replicas), update it and return early. We'll need to wait for the underlying sts to roll to the new spec before continuing.
     if cur_pool.spec.sts_spec.replicas > Some(0)
-        && want.spec.without_replicas() == cur_pool.spec.without_replicas()
+        && without_replicas(&want.spec.sts_spec) == without_replicas(&cur_pool.spec.sts_spec)
     {
         // Don't update the replicas; those will be scaled independently once thew new spec settles.
         let mut diff = cur_pool.clone();

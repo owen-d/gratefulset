@@ -12,7 +12,7 @@ Aims to enable more declarative, easier stateful applications on top of k8s.
 
 ## Expectations
 
-- The managed application should handle regular sts changes without help. This means it could otherwise tolerate a change to the pod spec within a vanilla sts, for example.
+- The managed application should handle regular sts changes without help. This means it could otherwise tolerate a change to the pod spec within a vanilla sts.
 
 ## Pluggable application specific behavior
 
