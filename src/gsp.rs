@@ -20,6 +20,7 @@ use kube_runtime::controller::ReconcilerAction;
 use log::debug;
 use serde::{Deserialize, Serialize};
 use std::cmp::max;
+use std::cmp::min;
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::iter::FromIterator;
@@ -134,22 +135,6 @@ pub struct GratefulSetPoolStatus {
     pub sts_status: StatefulSetStatus,
 }
 
-impl GratefulSetPoolStatus {
-    // stabilized indicates whether the underlying statefulset is ready and up to date.
-    fn stabilized(&self) -> bool {
-        [
-            self.sts_status.current_replicas,
-            self.sts_status.ready_replicas,
-            self.sts_status.updated_replicas,
-        ]
-        .iter()
-        .all(|x| match *x {
-            Some(x) => x == self.sts_status.replicas,
-            _ => false,
-        })
-    }
-}
-
 pub struct ImmutableSts<'a>(pub &'a StatefulSetSpec);
 
 impl<'a> Hash for ImmutableSts<'a> {
@@ -222,36 +207,51 @@ impl<'a> ImmutableSts<'a> {
     }
 }
 
-async fn reconcile(gs: GratefulSetPool, ctx: Context<Data>) -> Result<ReconcilerAction> {
+async fn reconcile(gsp: GratefulSetPool, ctx: Context<Data>) -> Result<ReconcilerAction> {
     let client = ctx.get_ref().client.clone();
-    let name = Meta::name(&gs);
-    let ns = Meta::namespace(&gs).expect("gs is namespaced");
-    debug!("Reconcile GratefulSetPool {}: {:?}", name, gs);
+    let name = Meta::name(&gsp);
+    let ns = Meta::namespace(&gsp).expect("gs is namespaced");
+    debug!("Reconcile GratefulSetPool {}: {:?}", name, gsp);
 
     let sts: Api<StatefulSet> = Api::namespaced(client.clone(), &ns);
-    let lp = ListParams {
-        label_selector: Some(format!("owner.pikach.us={}", name)),
-        ..ListParams::default()
-    };
 
     // TODO: replace with 404 matching when we know which error type this is.
-    let found = sts.get(&Meta::name(&gs)).await?;
+    let found = sts.get(&Meta::name(&gsp)).await?;
 
     // If the specs are equal, this is a noop.
-    if gs.spec.with_lock() == found.spec.clone().unwrap_or_default() {
+    if gsp.spec.with_lock() == found.spec.clone().unwrap_or_default() {
         return Ok(ReconcilerAction {
             requeue_after: None,
         });
     }
 
+    let desired_replicas: i32 = gsp.spec.sts_spec.replicas.unwrap_or(1);
+    let cur_spec_replicas: i32 = found.spec.clone().and_then(|x| x.replicas).unwrap_or(1);
+    let min_current_ready: i32 = min(
+        found
+            .clone()
+            .status
+            .and_then(|x| x.current_replicas)
+            .unwrap_or(0),
+        found
+            .clone()
+            .status
+            .and_then(|x| x.ready_replicas)
+            .unwrap_or(0),
+    );
+
     // The spec has changed. Update it & start the underlying rollout (sans replicas).
-    let desired_sans_replicas = without_replicas(&gs.spec.with_lock());
-    if without_replicas(&found.spec.unwrap_or_default()) != desired_sans_replicas {
-        let patch = serde_yaml::to_vec(&serde_json::json!({ "spec": desired_sans_replicas }))?;
+    let desired_sans_replicas = without_replicas(&gsp.spec.with_lock());
+    if without_replicas(&found.clone().spec.unwrap_or_default()) != desired_sans_replicas {
+        let prev_replicas = found.clone().spec.clone().and_then(|x| x.replicas);
+        let patch = serde_yaml::to_vec(&serde_json::json!({ "spec": StatefulSetSpec {
+            replicas: prev_replicas,
+            ..desired_sans_replicas.clone()
+        } }))?;
         return sts
             .patch(
-                &Meta::name(&gs),
-                &PatchParams::apply("gratefulset-mgr"),
+                &Meta::name(&gsp),
+                &PatchParams::apply("gratefulsetpool-mgr"),
                 patch,
             )
             .await
@@ -262,6 +262,30 @@ async fn reconcile(gs: GratefulSetPool, ctx: Context<Data>) -> Result<Reconciler
     }
 
     // From this point on, we know the desired spec (sans replicas) exists on the underlying sts.
+    // From here, we have two options: scaling down and scaling up.
+    // Scaling up is expected to be the simple path, but may change in the future. For now, we'll update the underlying configmap to include the lockfile for our new replica and increase the sts replicas to the desired number. It's foreseeable that in the future we may include custom scale-up strategies.
+    // Scaling down is a different story. We do the following in order:
+    // 1) Update underlying locks configmap to (cur-1) replicas
+    // 2) Run ScaleDown implementation (http call, etc)
+    // 3) Wait for new replica count to settle.
+
+    // Scale up
+    if gsp.spec.sts_spec.replicas.unwrap_or(1) > found.spec.and_then(|x| x.replicas).unwrap_or(1) {
+        let patch = serde_yaml::to_vec(&serde_json::json!({ "spec": desired_sans_replicas }))?;
+        return sts
+            .patch(
+                &Meta::name(&gsp),
+                &PatchParams::apply("gratefulsetpool-mgr"),
+                patch,
+            )
+            .await
+            .map_err(|e| Error::with_chain(e, "something went wrong"))
+            .map(|_| ReconcilerAction {
+                requeue_after: None,
+            });
+    }
+
+    // Scale down
 
     Ok(ReconcilerAction {
         // try again in 5min
