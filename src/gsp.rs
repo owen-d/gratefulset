@@ -133,6 +133,7 @@ impl GratefulSetPoolSpec {
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct GratefulSetPoolStatus {
     pub sts_status: StatefulSetStatus,
+    pub scale_down_records: BTreeMap<i32, String>,
 }
 
 pub struct ImmutableSts<'a>(pub &'a StatefulSetSpec);
@@ -225,21 +226,6 @@ async fn reconcile(gsp: GratefulSetPool, ctx: Context<Data>) -> Result<Reconcile
         });
     }
 
-    let desired_replicas: i32 = gsp.spec.sts_spec.replicas.unwrap_or(1);
-    let cur_spec_replicas: i32 = found.spec.clone().and_then(|x| x.replicas).unwrap_or(1);
-    let min_current_ready: i32 = min(
-        found
-            .clone()
-            .status
-            .and_then(|x| x.current_replicas)
-            .unwrap_or(0),
-        found
-            .clone()
-            .status
-            .and_then(|x| x.ready_replicas)
-            .unwrap_or(0),
-    );
-
     // The spec has changed. Update it & start the underlying rollout (sans replicas).
     let desired_sans_replicas = without_replicas(&gsp.spec.with_lock());
     if without_replicas(&found.clone().spec.unwrap_or_default()) != desired_sans_replicas {
@@ -261,16 +247,65 @@ async fn reconcile(gsp: GratefulSetPool, ctx: Context<Data>) -> Result<Reconcile
             });
     }
 
-    // From this point on, we know the desired spec (sans replicas) exists on the underlying sts.
-    // From here, we have two options: scaling down and scaling up.
+    // From this point on, we know the desired spec (sans replicas) exists on the underlying sts
+    // and therefore the only difference is the number of specified replicas.
+    // Thus we have two options: scaling down and scaling up.
     // Scaling up is expected to be the simple path, but may change in the future. For now, we'll update the underlying configmap to include the lockfile for our new replica and increase the sts replicas to the desired number. It's foreseeable that in the future we may include custom scale-up strategies.
     // Scaling down is a different story. We do the following in order:
     // 1) Update underlying locks configmap to (cur-1) replicas
     // 2) Run ScaleDown implementation (http call, etc)
     // 3) Wait for new replica count to settle.
 
+    let desired_replicas: i32 = gsp.spec.sts_spec.replicas.unwrap_or(1);
+    let found_spec_replicas: i32 = found.spec.as_ref().and_then(|x| x.replicas).unwrap_or(1);
+    let found_current_replicas: i32 = found
+        .status
+        .as_ref()
+        .and_then(|x| x.current_replicas)
+        .unwrap_or(0);
+    let found_ready: i32 = min(
+        found
+            .status
+            .as_ref()
+            .and_then(|x| x.current_replicas)
+            .unwrap_or(0),
+        found
+            .status
+            .as_ref()
+            .and_then(|x| x.ready_replicas)
+            .unwrap_or(0),
+    );
+
+    // Bail early if we're still waiting for a spec difference to finish rolling out
+    if found_spec_replicas != found_current_replicas {
+        return Ok(ReconcilerAction {
+            requeue_after: None,
+        });
+    }
+
+    let configmaps: Api<ConfigMap> = Api::namespaced(client.clone(), &ns);
+
     // Scale up
-    if gsp.spec.sts_spec.replicas.unwrap_or(1) > found.spec.and_then(|x| x.replicas).unwrap_or(1) {
+    if desired_replicas > found_spec_replicas {
+        // ensure locks configmap is updated
+        let locks = gsp.spec.configmap(String::from(&ns));
+        let should_update = configmaps
+            .get(&Meta::name(&locks))
+            .await
+            .and_then(|x| x.data)
+            .map(|x| x.get(desired_replicas.to_string()).is_some())
+            .unwrap_or(false);
+
+        let cm_patch = serde_yaml::to_vec(&serde_json::json!(locks))?;
+        configmaps
+            .patch(
+                &Meta::name(&locks),
+                &PatchParams::apply("gratefulsetpool-mgr"),
+                cm_patch,
+            )
+            .await
+            .map_err(|e| Error::with_chain(e, "something went wrong"))?;
+
         let patch = serde_yaml::to_vec(&serde_json::json!({ "spec": desired_sans_replicas }))?;
         return sts
             .patch(
@@ -286,6 +321,15 @@ async fn reconcile(gsp: GratefulSetPool, ctx: Context<Data>) -> Result<Reconcile
     }
 
     // Scale down
+    // TODO: scale down hooks
+
+    // ensure lock is removed for the nth replica
+
+    // if nth replica is no longer ready scale down sts
+    // and remove any `>n` fields from the status scale down map.
+
+    // check if status has [n -> hash(config)] in the status indicating the scaledown has been run.
+    // If not, run scaledown and add this field.
 
     Ok(ReconcilerAction {
         // try again in 5min
