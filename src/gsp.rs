@@ -107,12 +107,8 @@ impl GratefulSetPoolSpec {
 
     // returns the desired configmap with locks for each desired replica.
     pub fn configmap(&self, ns: String) -> ConfigMap {
-        let data = (0..self.sts_spec.replicas.unwrap_or(1))
-            .into_iter()
-            .map(|x| (x.to_string(), x.to_string()));
-
         ConfigMap {
-            data: Some(BTreeMap::from_iter(data)),
+            data: Some(lock_data(self.sts_spec.replicas.unwrap_or(1))),
             metadata: ObjectMeta {
                 name: Some(self.configmap_name()),
                 namespace: Some(ns),
@@ -128,6 +124,13 @@ impl GratefulSetPoolSpec {
             ..Default::default()
         }
     }
+}
+
+pub fn lock_data(replicas: i32) -> BTreeMap<String, String> {
+    let data = (0..replicas)
+        .into_iter()
+        .map(|x| (x.to_string(), x.to_string()));
+    BTreeMap::from_iter(data)
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -214,6 +217,11 @@ async fn reconcile(gsp: GratefulSetPool, ctx: Context<Data>) -> Result<Reconcile
     let ns = Meta::namespace(&gsp).expect("gs is namespaced");
     debug!("Reconcile GratefulSetPool {}: {:?}", name, gsp);
 
+    let finished = Ok(ReconcilerAction {
+        // try again in 5min
+        requeue_after: None,
+    });
+
     let sts: Api<StatefulSet> = Api::namespaced(client.clone(), &ns);
 
     // TODO: replace with 404 matching when we know which error type this is.
@@ -221,9 +229,7 @@ async fn reconcile(gsp: GratefulSetPool, ctx: Context<Data>) -> Result<Reconcile
 
     // If the specs are equal, this is a noop.
     if gsp.spec.with_lock() == found.spec.clone().unwrap_or_default() {
-        return Ok(ReconcilerAction {
-            requeue_after: None,
-        });
+        return finished;
     }
 
     // The spec has changed. Update it & start the underlying rollout (sans replicas).
@@ -242,9 +248,7 @@ async fn reconcile(gsp: GratefulSetPool, ctx: Context<Data>) -> Result<Reconcile
             )
             .await
             .map_err(|e| Error::with_chain(e, "something went wrong"))
-            .map(|_| ReconcilerAction {
-                requeue_after: None,
-            });
+            .and(finished);
     }
 
     // From this point on, we know the desired spec (sans replicas) exists on the underlying sts
@@ -278,9 +282,7 @@ async fn reconcile(gsp: GratefulSetPool, ctx: Context<Data>) -> Result<Reconcile
 
     // Bail early if we're still waiting for a spec difference to finish rolling out
     if found_spec_replicas != found_current_replicas {
-        return Ok(ReconcilerAction {
-            requeue_after: None,
-        });
+        return finished;
     }
 
     let configmaps: Api<ConfigMap> = Api::namespaced(client.clone(), &ns);
@@ -292,38 +294,86 @@ async fn reconcile(gsp: GratefulSetPool, ctx: Context<Data>) -> Result<Reconcile
         let should_update = configmaps
             .get(&Meta::name(&locks))
             .await
-            .and_then(|x| x.data)
-            .map(|x| x.get(desired_replicas.to_string()).is_some())
-            .unwrap_or(false);
+            .and_then(|x| Ok(x.data.unwrap_or_default()))
+            .map(|x| x.get(&desired_replicas.to_string()).is_none())
+            .unwrap_or(true);
 
-        let cm_patch = serde_yaml::to_vec(&serde_json::json!(locks))?;
-        configmaps
-            .patch(
-                &Meta::name(&locks),
-                &PatchParams::apply("gratefulsetpool-mgr"),
-                cm_patch,
-            )
-            .await
-            .map_err(|e| Error::with_chain(e, "something went wrong"))?;
+        if should_update {
+            let cm_patch = serde_yaml::to_vec(&serde_json::json!(locks))?;
+            configmaps
+                .patch(
+                    &Meta::name(&locks),
+                    &PatchParams::apply("gratefulsetpool-mgr"),
+                    cm_patch,
+                )
+                .await
+                .map_err(|e| Error::with_chain(e, "something went wrong"))?;
 
-        let patch = serde_yaml::to_vec(&serde_json::json!({ "spec": desired_sans_replicas }))?;
-        return sts
-            .patch(
-                &Meta::name(&gsp),
-                &PatchParams::apply("gratefulsetpool-mgr"),
-                patch,
-            )
-            .await
-            .map_err(|e| Error::with_chain(e, "something went wrong"))
-            .map(|_| ReconcilerAction {
-                requeue_after: None,
-            });
+            let patch = serde_yaml::to_vec(&serde_json::json!({ "spec": gsp.spec }))?;
+            return sts
+                .patch(
+                    &Meta::name(&gsp),
+                    &PatchParams::apply("gratefulsetpool-mgr"),
+                    patch,
+                )
+                .await
+                .map_err(|e| Error::with_chain(e, "something went wrong"))
+                .and(finished);
+        }
+
+        // no update is required
+        return finished;
     }
 
     // Scale down
     // TODO: scale down hooks
+    if desired_replicas < found_spec_replicas {
+        let mut locks = gsp.spec.configmap(String::from(&ns));
+        let should_update = configmaps
+            .get(&Meta::name(&locks))
+            .await
+            .and_then(|x| Ok(x.data.unwrap_or_default()))
+            // if the lock for found (which is greater than desired) still exists, we need to remove it
+            // and begin decrementing locks.
+            .map(|x| x.get(&(found_spec_replicas).to_string()).is_some())
+            .unwrap_or(true);
 
-    // ensure lock is removed for the nth replica
+        if should_update {
+            // ensure lock is removed for the nth replica
+            // decrement locks configmap to prevent underlying sts replica from restarting.
+            locks.data = Some(lock_data(found_spec_replicas - 1));
+            let cm_patch = serde_yaml::to_vec(&serde_json::json!(locks))?;
+            configmaps
+                .patch(
+                    &Meta::name(&locks),
+                    &PatchParams::apply("gratefulsetpool-mgr"),
+                    cm_patch,
+                )
+                .await
+                .map_err(|e| Error::with_chain(e, "something went wrong"))?;
+
+            // ensure that if unready replicas exist, we can decrement the spec now, too.
+            if found
+                .status
+                .and_then(|s| s.ready_replicas)
+                .map(|x| x < found_spec_replicas)
+                .unwrap_or(false)
+            {
+                let patch = serde_yaml::to_vec(
+                    &serde_json::json!({ "spec": gsp.spec.clone().delta_replicas(-1) }),
+                )?;
+                return sts
+                    .patch(
+                        &Meta::name(&gsp),
+                        &PatchParams::apply("gratefulsetpool-mgr"),
+                        patch,
+                    )
+                    .await
+                    .map_err(|e| Error::with_chain(e, "something went wrong"))
+                    .and(finished);
+            }
+        }
+    }
 
     // if nth replica is no longer ready scale down sts
     // and remove any `>n` fields from the status scale down map.
